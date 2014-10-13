@@ -273,7 +273,7 @@ describe('socket.io', function(){
 
     it('should allow request when origin defined as function and same is supplied', function(done) {
       var sockets = io({ origins: function(origin,callback){
-        if(origin == 'http://foo.example') 
+        if(origin == 'http://foo.example')
           return callback(null, true);
         return callback(null, false);
       } }).listen('54016');
@@ -288,7 +288,7 @@ describe('socket.io', function(){
 
     it('should allow request when origin defined as function and different is supplied', function(done) {
       var sockets = io({ origins: function(origin,callback){
-        if(origin == 'http://foo.example') 
+        if(origin == 'http://foo.example')
           return callback(null, true);
         return callback(null, false);
       } }).listen('54017');
@@ -445,7 +445,7 @@ describe('socket.io', function(){
       var c1 = client(srv, '/');
       var c2 = client(srv, '/abc');
     });
-    
+
     it('should be equivalent for "" and "/" on client', function(done){
       var srv = http();
       var sio = io(srv);
@@ -454,7 +454,7 @@ describe('socket.io', function(){
       });
       var c1 = client(srv, '');
     });
-    
+
     it('should work with `of` and many sockets', function(done){
       var srv = http();
       var sio = io(srv);
@@ -567,6 +567,189 @@ describe('socket.io', function(){
           expect(err).to.be('Invalid namespace');
           done();
         });
+      });
+    });
+
+    it('should receive only non-volatiles when postponing write execution through polling transport', function(done){
+      var srv = http();
+      var sio = io(srv, { transports: ['polling'] });
+      srv.listen(function(){
+        var i = 0;
+        var socket = client(srv, { transports: ['polling'] });
+
+        socket.on('ev', function(data) {
+          i++;
+        });
+
+        sio.on('connection', function(s){
+          // Overwrite transports' write
+          var origWrite = s.client.conn.transport.write;
+          s.client.conn.transport.write = function() {
+            var args = arguments;
+            setTimeout(function() {
+              origWrite.apply(this, args);
+            }.bind(this), 20); // Delay
+          };
+
+          // Enqueue something to send
+          s.volatile.emit('ev', 'volatile');
+          s.emit('ev', 'normal');
+          s.emit('ev', 'normal');
+
+          setTimeout(function() {
+            socket.close();
+            expect(i).to.be(2);
+            done();
+          }, 200);
+        });
+      });
+    });
+
+    it('should receive only one volatile and non-volatiles normally when sending in write callback through ws transport', function(done){
+      var srv = http();
+      var sio = io(srv, { transports: ['websocket'] });
+      srv.listen(function(){
+        var volatileSent = 0;
+        var i = 0;
+        var socket = client(srv, { transports: ['websocket'] });
+
+        socket.on('ev', function(data) {
+          if (0 == i) {
+            expect(data).to.be('volatile');
+          } else if (1 == i) {
+            expect(data).to.be('non-volatile');
+            done();
+          }
+          i++;
+        });
+
+        sio.on('connection', function(s){
+          // Overwrite engine write to make sure we have a clear buffer and writable socket
+          var origWrite = s.client.conn.write;
+          s.client.conn.write = function(msg, fn) {
+            origWrite.call(this, msg, function() {
+              if (fn) fn();
+              if (!volatileSent) {
+                s.volatile.emit('ev', 'volatile');
+                s.volatile.emit('ev', 'volatile');
+                s.volatile.emit('ev', 'volatile');
+                s.emit( 'ev', 'non-volatile' );
+              }
+              volatileSent = true;
+            });
+          };
+
+          // Enqueueing something to trigger write
+          s.emit('derp', 'data');
+        });
+      });
+    });
+
+    it('should receive only one volatile and non-volatiles normally when sending in write callback through polling transport', function(done){
+      var srv = http();
+      var sio = io(srv, { transports: ['polling'] });
+      srv.listen(function(){
+        var i = 0;
+        var volatileSent = false;
+        var socket = client(srv, { transports: ['polling'] });
+
+        socket.on('ev', function(data) {
+          if (0 == i || 2 == i) {
+            expect(data).to.be('volatile');
+          } else if (1 == i || 3 == i) {
+            expect(data).to.be('non-volatile');
+          }
+
+          if (3 == i) {
+            done();
+          }
+
+          i++;
+        });
+
+        sio.on('connection', function(s){
+          var interval = setInterval(function() {
+            if (s.client.conn.transport.writable && !volatileSent) {
+              clearInterval(interval);
+              s.volatile.emit('ev', 'volatile');
+              s.volatile.emit('ev', 'volatile');
+              s.volatile.emit('ev', 'volatile');
+              s.emit( 'ev', 'non-volatile' );
+
+              interval = setInterval(function() {
+                if (!s.client.conn.writeBuffer.length && !volatileSent) {
+                  clearInterval(interval);
+                  volatileSent = true;
+                  s.volatile.emit('ev', 'volatile');
+                  s.volatile.emit('ev', 'volatile');
+                  s.volatile.emit('ev', 'volatile');
+                  s.emit( 'ev', 'non-volatile' );
+                }
+              }, 10);
+            }
+          }, 10);
+
+          // Enqueueing something to trigger write
+          s.emit('derp', 'data');
+        });
+      });
+    });
+
+
+    it('should receive only non-volatiles when postponing write execution through ws transport', function(done){
+      var srv = http();
+      var sio = io(srv, { transports: ['websocket'] });
+      srv.listen(function(){
+        var i = 0;
+        var socket = client(srv, { transports: ['websocket'] });
+
+        socket.on('ev', function(data) {
+          i++;
+        });
+
+        sio.on('connection', function(s){
+          // Overwrite transports' write
+          var origWrite = s.client.conn.transport.write;
+          s.client.conn.transport.write = function() {
+            var args = arguments;
+            setTimeout(function() {
+              origWrite.apply(this, args);
+            }.bind(this), 20); // Delay
+          };
+
+          // Enqueue something to send
+          s.volatile.emit('ev', 'volatile');
+          s.emit('ev', 'normal');
+          s.emit('ev', 'normal');
+
+          setTimeout(function() {
+            expect(i).to.be(2);
+            done();
+          }, 200);
+        });
+      });
+    });
+
+    it('should receive only one event when emitting a normal and volatile one when not postponing write (buffer non-empty) through polling transport', function(done){
+      var srv = http();
+      var sio = io(srv, { transports: ['polling'], allowUpgrades: false });
+      srv.listen(function(){
+        var i = 0;
+        var socket = client(srv, { transports: ['polling'] });
+
+        socket.on('ev', function(){
+          i++;
+        });
+
+        sio.on('connection', function(s){
+          s.emit('ev', 'data');
+          s.volatile.emit('ev', 'data');
+        });
+
+        setTimeout(function(){
+          expect(i).to.be(1);
+          done();
+        }, 500);
       });
     });
   });
